@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CodeDeploy resources to run pipelines on EC2 instances
+
+
+Parameters:
+  ProjectName:
+    Description: Name of the project
+    Type: String
+  
+  EnvType:
+    Description: Environment type
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+  
+  IamStackName:
+    Description: Name of stack used to deploy IAM resources
+    Type: String
+
+
+Resources:
+  ImageIngestionPipelineApp:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub "${ProjectName}-${EnvType}-image-ingestion-pipeline"
+      Tags:
+        - Key: description
+          Value: !Sub "${ProjectName} image ingestion pipeline"
+
+  ImageIngestionPipelineDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref ImageIngestionPipelineApp
+      AutoRollbackConfiguration:
+        Enabled: false
+      DeploymentGroupName: !Sub "${ProjectName}-${EnvType}-image-ingestion-pipeline-deployment-group"
+      Ec2TagFilters:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${EnvType}-ec2.imageingestion"
+          Type: KEY_AND_VALUE
+      ServiceRoleArn: !ImportValue
+          Fn::Sub: "${IamStackName}-IamRoleCodeDeployARN"
+      Tags:
+        - Key: description
+          Value: !Sub "${ProjectName} ${EnvType} image ingestion pipeline"

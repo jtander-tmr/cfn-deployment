@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: S3 resources
+
+
+Parameters:
+  ProjectName:
+    Description: Name of the project
+    Type: String
+    Default: MISSING-PROJECT-NAME
+  
+  EnvType:
+    Description: Environment type
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+
+
+Resources:
+  S3DataLake:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - BucketKeyEnabled: true
+          ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      BucketName: !Sub "${ProjectName}-${EnvType}-s3"
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: logs
+      OwnershipControls:
+        Rules:
+        - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      Tags:
+      - Key: description
+        Value: !Sub "The ${ProjectName} data lake with an associated S3 bucket for logging"
+
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${EnvType}-s3logging"
+      Tags:
+      - Key: description
+        Value: !Sub "The ${ProjectName} logging bucket"
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LoggingBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: s3:PutObject
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Resource: !Sub "arn:aws:s3:::${LoggingBucket}/*"
+            Condition:
+              ArnLike:
+                aws:SourceArn: !GetAtt S3DataLake.Arn
+              StringEquals:
+                aws:SourceAccount: !Sub "${AWS::AccountId}"

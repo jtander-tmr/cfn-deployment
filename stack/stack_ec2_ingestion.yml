@@ -1,0 +1,287 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: EC2 resources for data ingestion
+
+
+Parameters:
+  ProjectName:
+    Description: Name of the project
+    Type: String
+  
+  EnvType:
+    Description: Environment type
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+
+  AvailabilityZone:
+    Description: Availability zone within ap-southeast-2 region chosen for this deployment
+    Type: String
+    Default: ap-southeast-2b
+    AllowedValues: [ap-southeast-2a, ap-southeast-2b, ap-southeast-2c]
+  
+  IamStackName:
+    Description: Name of stack used to deploy IAM resources
+    Type: String
+  
+  ImageIdLinuxCpu:
+    Description: >
+      AMI ID for Linux CPU EC2 instance. Default: Ubuntu 24.04 LTS (HVM)
+    Type: AWS::EC2::Image::Id
+    Default: ami-03f0544597f43a91d
+  
+  InstanceTypeIngestImages:
+    Description: EC2 instance (CPU) size for image ingestion
+    Type: String
+    Default: r6a.4xlarge
+  
+  InstanceTypeIngestTabularData:
+    Description: EC2 instance (CPU) size for tabular data ingestion
+    Type: String
+    Default: t3.2xlarge
+  
+  SecurityGroupId:
+    Description: >
+      Security Group ID
+    Type: AWS::EC2::SecurityGroup::Id
+    ConstraintDescription: A Security Group ID 
+  
+  SubnetId:
+    Description: >
+      Subnet ID
+    Type: AWS::EC2::Subnet::Id
+    ConstraintDescription: A Subnet from within the VPC must be defined
+
+
+Resources:
+  Ec2NetworkInterfaceIngestImages:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: Network interface with security group and subnet
+      GroupSet:
+        - !Ref SecurityGroupId
+      SubnetId: !Ref SubnetId
+      Tags: 
+        - Key: description
+          Value: EC2 instance network interface
+        - Key: Name
+          Value: !Sub "${ProjectName}-${EnvType}-ec2.imageingestion.networkinterface"
+  Ec2InstanceIngestImages:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      BlockDeviceMappings:
+        - {'DeviceName': '/dev/xvdh', 'Ebs': {'DeleteOnTermination': True, 'VolumeSize': 100, 'VolumeType': 'gp3', 'Encrypted': True, 'KmsKeyId': 'alias/default-ebs-key'}}
+      IamInstanceProfile: !ImportValue
+          Fn::Sub: "${IamStackName}-IamEc2InstanceProfileName"
+      ImageId: !Ref ImageIdLinuxCpu
+      InstanceInitiatedShutdownBehavior: stop
+      InstanceType: !Ref InstanceTypeIngestImages
+      KeyName: my-project-ec2-key # NOTE: For some stupid reason, this MUST be declared as a string here and cannot be generated dynamically (e.g., ${ProjectName} will not work)
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref Ec2NetworkInterfaceIngestImages
+          DeviceIndex: "0"
+      PrivateDnsNameOptions:
+        HostnameType: "resource-name"
+      Tags:
+        - Key: description
+          Value: EC2 instance with encrpyted EBS volume (100Gb, gp3)
+        - Key: Name
+          Value: !Sub "${ProjectName}-${EnvType}-ec2.imageingestion"
+        - Key: always_on
+          Value: "no"
+        - Key: termination_protection
+          Value: "no"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+
+          # Install latest updates
+          sudo apt update
+          sudo apt upgrade -y
+
+          # Configure packages
+          sudo dpkg --configure -a
+
+          # Install packages
+          sudo apt install ruby-full -y
+          sudo apt install wget -y
+          sudo apt install awscli -y
+
+          # Download CodeDeploy agent installer
+          wget --directory-prefix=/home/ubuntu/codedeploy_agent/ https://aws-codedeploy-${AWS::Region}.s3.${AWS::Region}.amazonaws.com/latest/install
+
+          # Change install package into an executable
+          sudo chmod +x /home/ubuntu/codedeploy_agent/install
+
+          # Execute install package and ensure CodeDeploy agent is running
+          sudo /home/ubuntu/codedeploy_agent/install auto
+          sudo systemctl start codedeploy-agent
+
+          # Install version of Python venv required by Ubuntu 22.04 and system-wide
+          # GeoPandas dependencies
+          sudo apt install python3.10-venv gdal-bin libgdal-dev -y
+      Volumes:
+        - Device: /dev/xvdf
+          VolumeId: !Ref Ec2VolumeIngestImages
+  Ec2VolumeIngestImages:
+    Type: AWS::EC2::Volume
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      Encrypted: true
+      Size: 100
+      Tags:
+        - Key: description
+          Value: EBS volume (100Gb, gp3) attached to EC2 instance
+        - Key: Name
+          Value: !Sub "${ProjectName}-${EnvType}-ebs.imageingestion"
+        - Key: always_on
+          Value: "no"
+      VolumeType: gp3
+
+  Ec2NetworkInterfaceIngestTabularData:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: Network interface with security group and subnet
+      GroupSet:
+        - !Ref SecurityGroupId
+      SubnetId: !Ref SubnetId
+      Tags: 
+        - Key: description
+          Value: EC2 instance network interface
+        - Key: Name
+          Value: !Sub "${ProjectName}-${EnvType}-ec2.tabularingestion.networkinterface"
+  Ec2InstanceIngestTabularData:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      BlockDeviceMappings:
+        - {'DeviceName': '/dev/xvdh', 'Ebs': {'DeleteOnTermination': True, 'VolumeSize': 100, 'VolumeType': 'gp3', 'Encrypted': True, 'KmsKeyId': 'alias/default-ebs-key'}}
+      IamInstanceProfile: !ImportValue
+          Fn::Sub: "${IamStackName}-IamEc2InstanceProfileName"
+      ImageId: !Ref ImageIdLinuxCpu
+      InstanceInitiatedShutdownBehavior: stop
+      InstanceType: !Ref InstanceTypeIngestTabularData
+      KeyName: my-project-ec2-key # NOTE: For some stupid reason, this MUST be declared as a string here and cannot be generated dynamically (e.g., ${ProjectName} will not work)
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref Ec2NetworkInterfaceIngestTabularData
+          DeviceIndex: "0"
+      PrivateDnsNameOptions:
+        HostnameType: "resource-name"
+      Tags:
+        - Key: description
+          Value: EC2 instance with encrpyted EBS volume (100Gb, gp3)
+        - Key: Name
+          Value: !Sub "${ProjectName}-${EnvType}-ec2.tabularingestion"
+        - Key: always_on
+          Value: "no"
+        - Key: termination_protection
+          Value: "no"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+
+          # Install latest updates
+          sudo apt update
+          sudo apt upgrade -y
+      Volumes:
+        - Device: /dev/xvdf
+          VolumeId: !Ref Ec2VolumeIngestTabularData
+  Ec2VolumeIngestTabularData:
+    Type: AWS::EC2::Volume
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      Encrypted: true
+      Size: 100
+      Tags:
+        - Key: description
+          Value: EBS volume (100Gb, gp3) attached to EC2 instance
+        - Key: Name
+          Value: !Sub "${ProjectName}-${EnvType}-ebs.tabularingestion"
+        - Key: always_on
+          Value: "no"
+      VolumeType: gp3
+
+  CloudWatchAlarmIngestImages:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: missing
+      Dimensions:
+        - Value: !GetAtt Ec2InstanceIngestImages.InstanceId
+          Name: InstanceId
+      Period: 60
+      EvaluationPeriods: 15
+      Namespace: AWS/EC2
+      AlarmActions:
+        - !Sub "arn:aws:swf:${AWS::Region}:${AWS::AccountId}:action/actions/AWS_EC2.InstanceId.Stop/1.0"
+        - !Ref SnsTopic
+      MetricName: CPUUtilization
+      AlarmDescription: !Sub "CloudWatch alarm to stop ${ProjectName}-${EnvType}-ec2.imageingestion when average CPU utilisation has not reached 0.5% over 15 consecutive 1 minute periods"
+      Statistic: Average
+      DatapointsToAlarm: 15
+      Tags:
+        - Key: description
+          Value: !Sub "CloudWatch alarm to stop ${ProjectName}-${EnvType}-ec2.imageingestion"
+        - Key: Name
+          Value: !Sub "${ProjectName}-${EnvType}-cloudwatchalarm-ec2.imageingestion-stop"
+      Threshold: 0.5
+  CloudWatchAlarmIngestImagesInstanceStatus:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: missing
+      Dimensions:
+        - Value: !GetAtt Ec2InstanceIngestImages.InstanceId
+          Name: InstanceId
+      Period: 60
+      EvaluationPeriods: 1
+      Namespace: AWS/EC2
+      AlarmActions:
+        - !Sub "arn:aws:swf:${AWS::Region}:${AWS::AccountId}:action/actions/AWS_EC2.InstanceId.Stop/1.0"
+        - !Ref SnsTopic
+      MetricName: StatusCheckFailed_Instance
+      AlarmDescription: !Sub "EC2 instance used to run image ingestion pipeline has failed an instance status check"
+      Statistic: Average
+      DatapointsToAlarm: 1
+      Tags:
+        - Key: description
+          Value: !Sub "CloudWatch alarm to stop ${ProjectName}-${EnvType}-ec2.imageingestion"
+        - Key: Name
+          Value: !Sub "${ProjectName}-${EnvType}-cloudwatchalarm-ec2.imageingestion-status-check-fail"
+      Threshold: 0.5
+  CloudWatchAlarmIngestTabularData:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: missing
+      Dimensions:
+        - Value: !GetAtt Ec2InstanceIngestTabularData.InstanceId
+          Name: InstanceId
+      Period: 60
+      EvaluationPeriods: 15
+      Namespace: AWS/EC2
+      AlarmActions:
+        - !Sub "arn:aws:swf:${AWS::Region}:${AWS::AccountId}:action/actions/AWS_EC2.InstanceId.Stop/1.0"
+        - !Ref SnsTopic
+      MetricName: CPUUtilization
+      AlarmDescription: !Sub "CloudWatch alarm to stop ${ProjectName}-${EnvType}-ec2.tabularingestion when average CPU utilisation has not reached 0.5% over 15 consecutive 1 minute periods"
+      Statistic: Average
+      DatapointsToAlarm: 15
+      Tags:
+        - Key: description
+          Value: !Sub "CloudWatch alarm to stop ${ProjectName}-${EnvType}-ec2.tabularingestion"
+        - Key: Name
+          Value: !Sub "${ProjectName}-${EnvType}-cloudwatchalarm-ec2.tabularingestion-stop"
+      Threshold: 0.5
+
+  SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: me@email.com
+          Protocol: email
+        # - Endpoint: others@email.com
+        #   Protocol: email
+        # - Endpoint: someguy@email.com
+        #   Protocol: email
+      TopicName: !Sub "${ProjectName}-${EnvType}-snstopic"

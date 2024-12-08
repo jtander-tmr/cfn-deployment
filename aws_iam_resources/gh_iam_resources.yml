@@ -1,0 +1,377 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: IAM resources required to allow GitHub Actions to access AWS
+
+
+Parameters:
+  ProjectName:
+    Description: Name of the project
+    Type: String
+    Default: myproject
+  
+  CreatorEmail:
+    Description: Email of person who created the AWS resources in this stack
+    Type: String
+    Default: me@email.com
+  
+  EnvType:
+    Description: Environment type
+    Type: String
+    AllowedValues: [dev, test, prod]
+
+  GitHubOrg:
+    Description: Name of GitHub organization/user (case sensitive)
+    Default: my-repo
+    Type: String
+  
+  RepositoryName:
+    Description: Name of GitHub repository (case sensitive)
+    Default: my-project
+    Type: String
+
+  OIDCProviderArn:
+    Description: Has a GitHub OIDC Provider been created?
+    Default: "Yes"
+    Type: String
+    AllowedValues: ["Yes", "No"]
+  
+  OIDCAudience:
+    Description: Audience supplied to configure-aws-credentials
+    Default: sts.amazonaws.com
+    Type: String
+
+
+Conditions:
+  CreateOIDCProvider: !Equals 
+    - !Ref OIDCProviderArn
+    - "No"
+
+  CreateProdResources: !Equals
+    - !Ref EnvType
+    - prod
+
+    
+Resources:
+# Create OIDC Provider if 'OIDCProviderArn' is false
+  GithubOidc:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOIDCProvider
+    Properties:
+      ClientIdList: 
+        - sts.amazonaws.com
+      ThumbprintList:
+        - ffffffffffffffffffffffffffffffffffffffff
+      Url: https://token.actions.githubusercontent.com
+
+# IAM Roles
+  GitHubActionsIacRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${EnvType}-githubactions.iac-iam-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Principal:
+              Federated: !If 
+                - CreateOIDCProvider
+                - !Ref GithubOidc
+                - !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: !Ref OIDCAudience
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  Fn::If:
+                    - CreateProdResources
+                    - !Sub "repo:${GitHubOrg}/${RepositoryName}:ref:refs/heads/main"
+                    - !Sub "repo:${GitHubOrg}/${RepositoryName}:ref:refs/heads/*"
+      Description: IAM role for GitHub Actions workflows that can create new stacks and create change set for existing stacks via CloudFormation
+      ManagedPolicyArns:
+        - !Ref IamManagedPolicyS3Access
+        - !Ref IamManagedPolicyIacStacks
+        - !Ref IamManagedPolicyIacIam
+        - !Ref IamManagedPolicyCodeDeploy
+        - !Ref IamManagedPolicyIacS3
+        - !Ref IamManagedPolicyIacEc2
+        - !Ref IamManagedPolicyIacCloudWatch
+        - !Ref IamManagedPolicyIacSnsTopic
+      Tags:
+        - Key: description
+          Value: IAM role for GitHub Actions workflows that can create new stacks and create change set for existing stacks via CloudFormation
+
+  GitHubActionsCodeDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${EnvType}-githubactions.codedeploy-iam-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Principal:
+              Federated: !If 
+                - CreateOIDCProvider
+                - !Ref GithubOidc
+                - !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: !Ref OIDCAudience
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  Fn::If:
+                    - CreateProdResources
+                    - !Sub "repo:${GitHubOrg}/${RepositoryName}:ref:refs/heads/main"
+                    - !Sub "repo:${GitHubOrg}/${RepositoryName}:ref:refs/heads/*"
+      Description: IAM role for GitHub Actions workflows that can create deployments using CodeDeploy
+      ManagedPolicyArns:
+        - !Ref IamManagedPolicyCodeDeploy
+        - !Ref IamManagedPolicyIacIam
+      Tags:
+        - Key: project
+          Value: !Ref ProjectName
+        - Key: creator_email
+          Value: !Ref CreatorEmail
+        - Key: environment
+          Value: !Ref EnvType
+        - Key: description
+          Value: IAM role for GitHub Actions workflows that can create deployments using CodeDeploy
+
+# IAM Managed Policies
+  IamManagedPolicyS3Access:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows IAM role to write to S3 bucket
+      ManagedPolicyName: !Sub "${ProjectName}-${EnvType}-cloudformation-templates-read-write-s3"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowListBucket
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: arn:aws:s3:::cloudformation-templates-s3
+          - Sid: AllowModifyBucketObjects
+            Effect: Allow
+            Action:
+              - s3:*Object
+            Resource: arn:aws:s3:::cloudformation-templates-s3/*
+
+  IamManagedPolicyIacStacks:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allow IAM role to create new CloudFormation stacks and create change set for existing stacks
+      ManagedPolicyName: !Sub "${ProjectName}-${EnvType}-deploy-cf-stack"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowDescribeStack
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ListStackResources
+              - cloudformation:DescribeStackResources
+              - cloudformation:GetTemplate
+              - cloudformation:ValidateTemplate
+            Resource: "*"
+          - Sid: AllowCreateDeleteStack
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:DeleteStack
+              - cloudformation:UpdateStack
+            Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectName}-${EnvType}*"
+          - Sid: AllowChangeSetStack
+            Effect: Allow
+            Action:
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+            Resource: !Sub "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ProjectName}-${EnvType}*/*"
+
+  IamManagedPolicyIacIam:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allow IAM role to create IAM resources
+      ManagedPolicyName: !Sub "${ProjectName}-${EnvType}-create-iam-resources"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCreateIamPolicies
+            Effect: Allow
+            Action:
+              - iam:ListPolicies
+              - iam:GetPolicy
+              - iam:CreatePolicy
+              - iam:UpdatePolicy
+              - iam:DeletePolicy
+              - iam:ListPolicyVersions
+              - iam:GetPolicyVersion
+              - iam:CreatePolicyVersion
+              - iam:DeletePolicyVersion
+            Resource: !Sub "arn:aws:iam::${AWS::AccountId}:policy/${ProjectName}-${EnvType}*"
+          - Sid: AllowCreateIamRoles
+            Effect: Allow
+            Action:
+              - iam:ListRoles
+              - iam:GetRole
+              - iam:CreateRole
+              - iam:UpdateRole
+              - iam:DeleteRole
+              - iam:PassRole
+              - iam:GetRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:TagRole
+              - iam:ListAttachedRolePolicies
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:ListRolePolicies
+            Resource: !Sub "arn:aws:iam::${AWS::AccountId}:role/${ProjectName}-${EnvType}*"
+          - Sid: AllowCreateInstanceProfile
+            Effect: Allow
+            Action:
+              - iam:ListInstanceProfiles
+              - iam:ListInstanceProfilesForRole
+              - iam:GetInstanceProfile
+              - iam:CreateInstanceProfile
+              - iam:DeleteInstanceProfile
+              - iam:AddRoleToInstanceProfile
+              - iam:RemoveRoleFromInstanceProfile
+            Resource: '*'
+
+  IamManagedPolicyIacS3:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allow IAM role to create S3 resources
+      ManagedPolicyName: !Sub "${ProjectName}-${EnvType}-create-s3-resources"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCreateS3
+            Effect: Allow
+            Action:
+              - s3:CreateBucket
+              - s3:ListBucket
+              - s3:GetBucket
+              - s3:PutBucketEncryption
+              - s3:PutEncryptionConfiguration
+              - s3:PutBucketOwnershipControls
+              - s3:PutBucketPublicAccessBlock
+              - s3:PutBucketPolicy
+              - s3:GetBucketPolicy
+              - s3:DeleteBucketPolicy
+              - s3:PutBucketLogging
+              - s3:GetBucketLogging
+              - s3:PutBucketTagging
+              - s3:GetBucketTagging
+              - s3:DeleteBucketTagging
+              - s3:TagBucket
+            Resource: !Sub "arn:aws:s3:::${ProjectName}-${EnvType}*"
+          - Sid: AllowObjectsS3
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${ProjectName}-${EnvType}*/*"
+
+  IamManagedPolicyIacEc2:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allow IAM role to create EC2 resources
+      ManagedPolicyName: !Sub "${ProjectName}-${EnvType}-create-ec2-resources"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowDescribeEC2
+            Effect: Allow
+            Action:
+              - ec2:Describe*
+            Resource: "*"
+          - Sid: AllowCreateEc2
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+              - ec2:StartInstances
+              - ec2:DescribeInstances
+              - ec2:TerminateInstances
+              - ec2:CreateNetworkInterface
+              - ec2:DeleteNetworkInterface
+              - ec2:AttachNetworkInterface
+              - ec2:CreateVolume
+              - ec2:DeleteVolume
+              - ec2:AttachVolume
+              - ec2:CreateTags
+              - ec2:DeleteTags
+            Resource: "*"
+
+  IamManagedPolicyIacCloudWatch:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allow IAM role to create CloudWatch resources
+      ManagedPolicyName: !Sub "${ProjectName}-${EnvType}-create-cloudwatch-resources"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCreateCloudWatchAlarms
+            Effect: Allow
+            Action:
+              - cloudwatch:DescribeAlarms
+              - cloudwatch:ListAlarms
+              - cloudwatch:PutMetricAlarm
+              - cloudwatch:EnableAlarmActions
+              - cloudwatch:DeleteAlarms
+              - cloudwatch:TagResource
+            Resource: "*"
+
+  IamManagedPolicyIacSnsTopic:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allow IAM role to create SNS Topic resources
+      ManagedPolicyName: !Sub "${ProjectName}-${EnvType}-create-snstopic-resources"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCreateSnsTopic
+            Effect: Allow
+            Action:
+              - sns:ListTopics
+              - sns:GetTopicAttributes
+              - sns:SetTopicAttributes
+              - sns:CreateTopic
+              - sns:DeleteTopic
+              - sns:Publish
+              - sns:ListSubscriptions
+              - sns:ListSubscriptionsByTopic
+              - sns:Subscribe
+              - sns:Unsubscribe
+              - sns:TagResource
+            Resource: !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${EnvType}-snstopic"
+
+  IamManagedPolicyCodeDeploy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows IAM role to create deployments using CodeDeploy
+      ManagedPolicyName: !Sub "${ProjectName}-${EnvType}-codedeploy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CodeDeployAccessPolicy
+            Effect: Allow
+            Action:
+                - codedeploy:*
+            Resource:
+              - !Sub "arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:*:${ProjectName}-${EnvType}*"
+              - !Sub "arn:aws:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentconfig:CodeDeployDefault.OneAtATime"
+          - Sid: S3AccessPolicy
+            Effect: Allow
+            Action:
+              - s3:*
+            Resource: !Sub "arn:aws:s3:::${ProjectName}-${EnvType}*/*"
+          - Sid: Ec2AccessPolicy
+            Effect: Allow
+            Action:
+              - ec2:*
+            Resource: "*"

@@ -1,0 +1,183 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Root stack
+
+
+Parameters:
+  # General parameters
+  ProjectName:
+    Description: Name of the project
+    Type: String
+    Default: myproject
+  
+  CreatorEmail:
+    Description: Email of person who created the AWS resources in this stack
+    Type: String
+    Default: me@email.com
+  
+  EnvType:
+    Description: Environment type
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+  
+  # EC2 parameters
+  AvailabilityZone:
+    Description: Specify availability zone
+    Type: String
+    Default: ap-southeast-2b
+    AllowedValues: [ap-southeast-2a, ap-southeast-2b, ap-southeast-2c]
+
+  ImageIdLinuxCpu:
+    Description: >
+      AMI ID for Linux CPU EC2 instance. Default: Ubuntu 22.04 LTS (HVM) 64-bit (x86)
+    Type: AWS::EC2::Image::Id
+    Default: ami-0375ab65ee943a2a6
+  
+  InstanceTypeIngestImages:
+    Description: EC2 instance (CPU) size for image ingestion
+    Type: String
+    Default: r6a.4xlarge
+  
+  InstanceTypeIngestTabularData:
+    Description: EC2 instance (CPU) size for tabular data ingestion
+    Type: String
+    Default: t3.2xlarge
+  
+  ImageIdLinuxGpu:
+    Description: >
+      AMI ID for Linux GPU EC2 instance. Default: Deep Learning OSS NVIDIA
+      Driver AMI GPU TensorFlow 2.16 (Ubuntu 20.04)
+    Type: AWS::EC2::Image::Id
+    Default: ami-0f4269dc1a873f998
+  
+  InstanceTypeImageModelTraining:
+    Description: EC2 instance (GPU) size for training deep learning model
+    Type: String
+    Default: p2.8xlarge
+  
+  # VPC parameters
+  SecurityGroupId:
+    Description: >
+      Security Group ID
+    Type: AWS::EC2::SecurityGroup::Id
+    ConstraintDescription: A Security Group ID 
+  
+  SubnetId:
+    Description: >
+      Subnet ID
+    Type: AWS::EC2::Subnet::Id
+    ConstraintDescription: A Subnet from within the VPC must be defined
+
+
+Resources:
+  S3Stack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvType: !Ref EnvType
+      TemplateURL: ./stack_s3.yml
+      Tags:
+        - Key: project
+          Value: !Ref ProjectName
+        - Key: creator_email
+          Value: !Ref CreatorEmail
+        - Key: environment
+          Value: !Ref EnvType
+
+  IamStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvType: !Ref EnvType
+      TemplateURL: ./stack_iam.yml
+      Tags:
+        - Key: project
+          Value: !Ref ProjectName
+        - Key: creator_email
+          Value: !Ref CreatorEmail
+        - Key: environment
+          Value: !Ref EnvType
+
+  CodeDeployStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: IamStack
+    Properties:
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvType: !Ref EnvType
+        IamStackName: !GetAtt
+          - IamStack
+          - Outputs.IamStackName
+      TemplateURL: ./stack_codedeploy.yml
+      Tags:
+        - Key: project
+          Value: !Ref ProjectName
+        - Key: creator_email
+          Value: !Ref CreatorEmail
+        - Key: environment
+          Value: !Ref EnvType
+
+  Ec2IngestionStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: IamStack
+    Properties:
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvType: !Ref EnvType
+        AvailabilityZone: !Ref AvailabilityZone
+        IamStackName: !GetAtt
+          - IamStack
+          - Outputs.IamStackName
+        ImageIdLinuxCpu: !Ref ImageIdLinuxCpu
+        InstanceTypeIngestImages: !Ref InstanceTypeIngestImages
+        InstanceTypeIngestTabularData: !Ref InstanceTypeIngestTabularData
+        SecurityGroupId: !Ref SecurityGroupId
+        SubnetId: !Ref SubnetId
+      TemplateURL: ./stack_ec2_ingestion.yml
+      Tags:
+        - Key: project
+          Value: !Ref ProjectName
+        - Key: creator_email
+          Value: !Ref CreatorEmail
+        - Key: environment
+          Value: !Ref EnvType
+
+  Ec2ModelTrainingStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: IamStack
+    Properties:
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvType: !Ref EnvType
+        AvailabilityZone: !Ref AvailabilityZone
+        IamStackName: !GetAtt
+          - IamStack
+          - Outputs.IamStackName
+        ImageIdLinuxGpu: !Ref ImageIdLinuxGpu
+        InstanceTypeImageModelTraining: !Ref InstanceTypeImageModelTraining
+        SecurityGroupId: !Ref SecurityGroupId
+        SubnetId: !Ref SubnetId
+      TemplateURL: ./stack_ec2_model_training.yml
+      Tags:
+        - Key: project
+          Value: !Ref ProjectName
+        - Key: creator_email
+          Value: !Ref CreatorEmail
+        - Key: environment
+          Value: !Ref EnvType
+
+
+Outputs:
+  CreatorEmailOutput:
+    Description: Name of the project
+    Value: !Ref CreatorEmail
+    Export:
+      Name: !Sub "${AWS::StackName}-CreatorEmail"
+
+  AvailabilityZoneOutput:
+    Description: Name of the project
+    Value: !Ref AvailabilityZone
+    Export:
+      Name: !Sub "${AWS::StackName}-AvailabilityZone"

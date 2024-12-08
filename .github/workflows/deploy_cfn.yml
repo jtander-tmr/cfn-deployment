@@ -1,0 +1,95 @@
+name: Deploy CloudFormation Stack
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_project_name:
+        description: "Name of the project"
+        required: true
+        type: string
+        default: "myproject"
+      aws_creator_email:
+        description: "Email of person who created the AWS resources in this stack"
+        required: true
+        type: string
+        default: "me@email.com"
+      aws_env:
+        description: "Environment type"
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+        default: "dev"
+      root_cfn_template_location:
+        description: "Path to CloudFormation root template (relative or absolute path, URL)"
+        required: true
+        type: string
+        default: "./stack/qluad_stack_root.yml"
+
+env:
+  aws_region: "ap-southeast-2"
+  aws_cfn_s3_bucket: "cloudformation-templates-s3"
+  aws_packaged_cfn: "packaged_${{ inputs.aws_project_name }}_stack_root.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  DeployCloudFormationStack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git clone the repository
+        uses: actions/checkout@v3
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install awscli
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1.7.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.tau_aws_account_id }}:role/${{ inputs.aws_project_name }}-${{ inputs.aws_env }}-githubactions.iac-iam-role
+          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+          aws-region: ${{ env.aws_region }}
+          
+      - name: Package CloudFormation deployment with nested stacks
+        run: |
+          aws cloudformation package --template-file ${{ inputs.root_cfn_template_location}} --s3-bucket ${{ env.aws_cfn_s3_bucket }} --s3-prefix ${{ inputs.aws_project_name }} --output-template-file ${{ env.aws_packaged_cfn }}
+        
+      - name: Copy packaged CloudFormation deployment to S3
+        run: |
+          aws s3 cp ${{ env.aws_packaged_cfn }} s3://${{ env.aws_cfn_s3_bucket }}/${{ inputs.aws_project_name }}/
+
+      - name: Deploy to AWS CloudFormation
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: ${{ inputs.aws_project_name }}-${{ inputs.aws_env }}-stack
+          template: https://${{ env.aws_cfn_s3_bucket }}.s3.${{ env.aws_region }}.amazonaws.com/${{ inputs.aws_project_name }}/${{ env.aws_packaged_cfn }}
+          capabilities: "CAPABILITY_NAMED_IAM"
+          parameter-overrides: >
+            ProjectName=${{ inputs.aws_project_name }},
+            CreatorEmail=${{ inputs.aws_creator_email }},
+            EnvType=${{ inputs.aws_env }}
+          timeout-in-minutes: 59
+          tags: '[
+            {
+              "Key": "project",
+              "Value": "${{ inputs.aws_project_name }}"
+              },
+            {
+              "Key": "creator_email", 
+              "Value": "${{ inputs.aws_creator_email }}"
+            }
+            {
+              "Key": "environment", 
+              "Value": "${{ inputs.aws_env }}"
+            }]'
